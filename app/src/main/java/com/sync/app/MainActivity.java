@@ -968,6 +968,18 @@ public class MainActivity extends AppCompatActivity {
                 .replaceAll("[^\\p{L}\\p{N}]", "");
     }
 
+    private static List<String> qtok(String s) {
+        List<String> o = new ArrayList<>();
+        for (String w : s.toLowerCase(java.util.Locale.ROOT).split("[^\\p{L}\\p{N}]+")) if (!w.isEmpty()) o.add(w);
+        return o;
+    }
+
+    private static boolean tokIn(List<String> toks, String w) {
+        for (String x : toks)
+            if (x.equals(w) || (Math.min(x.length(), w.length()) >= 3 && (x.startsWith(w) || w.startsWith(x)) && Math.abs(x.length() - w.length()) <= 2)) return true;
+        return false;
+    }
+
     private static boolean artistHit(String ytArtist, List<String> mbArtists) {
         String y = nz(ytArtist);
         if (y.isEmpty()) return false;
@@ -976,15 +988,18 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private static final class Rec {
-        String title, rel, relType = ""; List<String> artists = new ArrayList<>(); int len, score, nrel;
+        String title, rel, relType = ""; List<String> artists = new ArrayList<>(); int len, score, nrel; double tcov;
     }
 
     private List<Rec> mbRecordings(String q) throws Exception {
-        String clean = q.replaceAll("[+\\-&|!(){}\\[\\]^\"~*?:\\\\/]", " ").trim().replaceAll("\\s+", " ");
-        if (clean.isEmpty()) return new ArrayList<>();
-        StringBuilder sb = new StringBuilder("recording:\"").append(clean).append("\"");
-        int n = 1;
-        String url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=40&query="
+        List<String> qt = qtok(q);
+        if (qt.isEmpty()) return new ArrayList<>();
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < qt.size() && i < 6; i++) {
+            if (i > 0) sb.append(" AND ");
+            sb.append("(recording:").append(qt.get(i)).append("* OR artist:").append(qt.get(i)).append("*)");
+        }
+        String url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=50&query="
                 + java.net.URLEncoder.encode(sb.toString(), "UTF-8");
         JSONArray arr = new JSONObject(mbGet(url)).optJSONArray("recordings");
         java.util.LinkedHashMap<String, Rec> best = new java.util.LinkedHashMap<>();
@@ -999,11 +1014,12 @@ public class MainActivity extends AppCompatActivity {
                 String nm = a != null ? a.optString("name") : c.optString("name");
                 if (!nm.isEmpty()) r.artists.add(nm);
             }
-            if (r.title.isEmpty() || r.artists.isEmpty() || r.score < 85) continue;
-            String qn = nz(q), tn = nz(r.title), an = nz(r.artists.get(0));
-            boolean rel = !qn.isEmpty() && !tn.isEmpty() && (tn.contains(qn) || (tn.length() >= 3 && qn.contains(tn)))
-                    && (qn.length() >= 4 || tn.equals(qn));
-            if (!rel) continue;   // 검색어와 곡명/아티스트가 실제로 맞는 녹음만 사용
+            if (r.title.isEmpty() || r.artists.isEmpty() || r.score < 50) continue;
+            List<String> tt = qtok(r.title.replaceAll("\\(.*?\\)|\\[.*?\\]", " ")), at = qtok(android.text.TextUtils.join(" ", r.artists));
+            int mt = 0, ma = 0;
+            for (String w : qt) { if (tokIn(tt, w)) mt++; else if (tokIn(at, w)) ma++; }
+            r.tcov = (double) mt / qt.size();
+            if (r.tcov < .5 || mt + ma < qt.size()) continue;   // 곡명이 검색어와 충분히 맞아야 함   // 검색어와 곡명/아티스트가 실제로 맞는 녹음만 사용
             JSONArray rl = o.optJSONArray("releases");
             int bestRank = 9; String bestDate = "9999";
             for (int k = 0; rl != null && k < rl.length(); k++) {
@@ -1025,7 +1041,7 @@ public class MainActivity extends AppCompatActivity {
             if (old == null || r.nrel > old.nrel) best.put(key, r);
         }
         List<Rec> out = new ArrayList<>(best.values());
-        java.util.Collections.sort(out, (a, b) -> a.score != b.score ? b.score - a.score : b.nrel - a.nrel);
+        java.util.Collections.sort(out, (a, b) -> a.tcov != b.tcov ? Double.compare(b.tcov, a.tcov) : a.nrel != b.nrel ? b.nrel - a.nrel : b.score - a.score);
         return out.size() > 12 ? new ArrayList<>(out.subList(0, 12)) : out;
     }
 
