@@ -980,19 +980,11 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private List<Rec> mbRecordings(String q) throws Exception {
-        StringBuilder sb = new StringBuilder();
-        int n = 0;
-        for (String w : q.trim().split("\\s+")) {
-            String e = w.replaceAll("[+\\-&|!(){}\\[\\]^\"~*?:\\\\/]", " ").trim();
-            if (e.isEmpty() || n >= 6) continue;
-            for (String x : e.split("\\s+")) {
-                if (x.isEmpty() || n >= 6) continue;
-                if (n++ > 0) sb.append(" AND ");
-                sb.append("(recording:").append(x).append(" OR artist:").append(x).append(')');
-            }
-        }
-        if (n == 0) return new ArrayList<>();
-        String url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=25&query="
+        String clean = q.replaceAll("[+\\-&|!(){}\\[\\]^\"~*?:\\\\/]", " ").trim().replaceAll("\\s+", " ");
+        if (clean.isEmpty()) return new ArrayList<>();
+        StringBuilder sb = new StringBuilder("recording:\"").append(clean).append("\"");
+        int n = 1;
+        String url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=40&query="
                 + java.net.URLEncoder.encode(sb.toString(), "UTF-8");
         JSONArray arr = new JSONObject(mbGet(url)).optJSONArray("recordings");
         java.util.LinkedHashMap<String, Rec> best = new java.util.LinkedHashMap<>();
@@ -1009,8 +1001,8 @@ public class MainActivity extends AppCompatActivity {
             }
             if (r.title.isEmpty() || r.artists.isEmpty() || r.score < 85) continue;
             String qn = nz(q), tn = nz(r.title), an = nz(r.artists.get(0));
-            boolean rel = !qn.isEmpty() && !tn.isEmpty() && (tn.contains(qn) || (tn.length() >= 2 && qn.contains(tn))
-                    || (an + tn).contains(qn) || (tn + an).contains(qn));
+            boolean rel = !qn.isEmpty() && !tn.isEmpty() && (tn.contains(qn) || (tn.length() >= 3 && qn.contains(tn)))
+                    && (qn.length() >= 4 || tn.equals(qn));
             if (!rel) continue;   // 검색어와 곡명/아티스트가 실제로 맞는 녹음만 사용
             JSONArray rl = o.optJSONArray("releases");
             int bestRank = 9; String bestDate = "9999";
