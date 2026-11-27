@@ -1467,15 +1467,16 @@ async function doSearch(query) {
     const mq = kind => cachedCall({ type: 'musicSearch', kind, query: q }, 300000);
     const seq = ++_srchSeq;
     const catP = cachedCall({ type: 'musicCatalog', query: q }, 300000).catch(() => ({ items: [] }));
-    const [sr, ar, br] = await Promise.allSettled([mq('song'), mq('artist'), mq('album')]);
+    const vP = cachedCall({ type: 'search', query: q }, 300000);
+    const [sr, ar, br, vr] = await Promise.allSettled([mq('song'), mq('artist'), mq('album'), vP]);
     if (seq !== _srchSeq) return;
     const d = {
         songs: sr.status === 'fulfilled' ? (sr.value.items || []).slice() : [],
         artists: ar.status === 'fulfilled' ? (ar.value.items || []) : [],
         albums: br.status === 'fulfilled' ? (br.value.items || []) : [],
-        videos: []
+        videos: vr.status === 'fulfilled' && vr.value.tracks ? sortMusicFirst(vr.value.tracks) : []
     };
-    if (!d.songs.length && !d.artists.length && !d.albums.length) {
+    if (!d.songs.length && !d.artists.length && !d.albums.length && !d.videos.length) {
         const cr = await catP; if (seq !== _srchSeq) return;
         d.songs = (cr.items || []).slice();
         if (!d.songs.length) {
@@ -1495,15 +1496,16 @@ async function doSearch(query) {
     const render = () => _renderSearch(d);
     _sRender = render; render();
     /* 카탈로그 곡은 도착하는 대로 목록 끝에 덧붙인다 (첫 화면은 기다리지 않음 → 검색 속도 유지) */
+    const qn = q.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
+    const nz = x => (x || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
     catP.then(cr => {
         if (seq !== _srchSeq || _sRender !== render) return;
         const have = new Set(d.songs.map(t => t.id));
         const add = (cr.items || []).filter(t => t.id && !have.has(t.id));
         if (!add.length) return;
-        const base = d.songs.length, list = document.querySelector('#s-res .mi-list');
-        d.songs.push(...add);
-        if (!list) { render(); return; }
-        add.forEach((t, k) => list.appendChild(mkSongRow(t, () => { S.q = d.songs; S.idx = base + k; playTrack(t, base + k); }, 0)));
+        const top = add.filter(t => nz(t.title || t.name).startsWith(qn)), rest = add.filter(t => !top.includes(t));
+        d.songs = top.concat(d.songs, rest);
+        render();
     });
 }
 
