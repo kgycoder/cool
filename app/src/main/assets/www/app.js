@@ -1451,6 +1451,15 @@ function _renderSearch(d) {
     }
 }
 let _srchSeq = 0;
+function _qTok(q) { return (q || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean); }
+function _tokEq(a, b) { return a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)) && Math.abs(a.length - b.length) <= 2); }
+function _relScore(t, qt) {
+    if (!qt.length) return 0;
+    const tt = _qTok(String(t.title || t.name || '').replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')), at = _qTok(t.channel || t.artist || '');
+    let s = 0, m = 0;
+    for (const q of qt) { if (tt.some(x => _tokEq(x, q))) { s += 1; m++; } else if (at.some(x => _tokEq(x, q))) s += .6; }
+    return s / qt.length - Math.min(Math.max(0, tt.length - m) * .05, .25);
+}
 async function doSearch(query) {
     if (!query?.trim()) return;
     gv('search', document.querySelector('[data-v="search"]'));
@@ -1493,19 +1502,27 @@ async function doSearch(query) {
         _sRender = () => _renderSearch(d); _sRender();
         return;
     }
+    /* 관련도 재정렬: 검색어 토큰이 곡명에 얼마나 맞는지(+MusicBrainz 확인곡 가산)로 점수를 매겨
+       YTM 곡 + 카탈로그 + 정확히 맞는 영상을 하나의 곡 목록으로 합치고, 동떨어진 결과는 걷어낸다. */
+    const qt = _qTok(q), ytSongs = d.songs.slice(), vids0 = d.videos.slice();
+    const compose = cat => {
+        const ver = new Set(cat.map(t => t.id)), seen = new Set(), pool = [];
+        const push = (t, bonus, i) => { if (t && t.id && !seen.has(t.id)) { seen.add(t.id); pool.push({ t, s: _relScore(t, qt) + bonus - i * .002 }); } };
+        cat.forEach((t, i) => push(t, .15, i)); ytSongs.forEach((t, i) => push(t, .05, i));
+        vids0.forEach((t, i) => { if (_relScore(t, qt) >= .9) push(t, 0, i + 5); });
+        pool.sort((a, b) => b.s - a.s);
+        const top = pool.length ? pool[0].s : 0;
+        const keep = pool.filter(x => top < .6 || x.s >= top - .45).slice(0, 30);
+        const used = new Set(keep.map(x => x.t.id));
+        d.songs = keep.map(x => x.t);
+        d.videos = vids0.filter(v => !used.has(v.id));
+    };
+    compose([]);
     const render = () => _renderSearch(d);
     _sRender = render; render();
-    /* 카탈로그 곡은 도착하는 대로 목록 끝에 덧붙인다 (첫 화면은 기다리지 않음 → 검색 속도 유지) */
-    const qn = q.toLowerCase().replace(/[^\p{L}\p{N}]/gu, '');
-    const nz = x => (x || '').toLowerCase().replace(/\([^)]*\)|\[[^\]]*\]/g, '').replace(/[^\p{L}\p{N}]/gu, '');
     catP.then(cr => {
-        if (seq !== _srchSeq || _sRender !== render) return;
-        const have = new Set(d.songs.map(t => t.id));
-        const add = (cr.items || []).filter(t => t.id && !have.has(t.id));
-        if (!add.length) return;
-        const top = add.filter(t => nz(t.title || t.name).startsWith(qn)), rest = add.filter(t => !top.includes(t));
-        d.songs = top.concat(d.songs, rest);
-        render();
+        if (seq !== _srchSeq || _sRender !== render || !(cr.items || []).length) return;
+        compose(cr.items); render();
     });
 }
 
