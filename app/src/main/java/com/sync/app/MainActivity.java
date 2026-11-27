@@ -651,8 +651,8 @@ public class MainActivity extends AppCompatActivity {
 
     /** 일시적인 400/5xx/네트워크 오류는 한 번 재시도 */
     private String ytmCall(String ep, JSONObject body) throws Exception {
-        try { return ytmCallOnce(ep, body, ytmVer()); }
-        catch (IOException e) { Thread.sleep(250); return ytmCallOnce(ep, body, YTM_VER); }   // 재시도는 고정 버전으로
+        try { return ytmCallOnce(ep, body, YTM_VER); }
+        catch (IOException e) { Thread.sleep(250); return ytmCallOnce(ep, body, ytmVer()); }   // 400 등 실패 시 최신 버전으로 재시도
     }
 
     /** 오래된 clientVersion 은 browse 에서 HTTP 400(FAILED_PRECONDITION)을 낼 수 있어 날짜 기반으로 갱신 */
@@ -988,7 +988,7 @@ public class MainActivity extends AppCompatActivity {
             for (String x : e.split("\\s+")) {
                 if (x.isEmpty() || n >= 6) continue;
                 if (n++ > 0) sb.append(" AND ");
-                sb.append("(recording:").append(x).append(" OR artist:").append(x).append(" OR release:").append(x).append(')');
+                sb.append("(recording:").append(x).append(" OR artist:").append(x).append(')');
             }
         }
         if (n == 0) return new ArrayList<>();
@@ -1007,7 +1007,11 @@ public class MainActivity extends AppCompatActivity {
                 String nm = a != null ? a.optString("name") : c.optString("name");
                 if (!nm.isEmpty()) r.artists.add(nm);
             }
-            if (r.title.isEmpty() || r.artists.isEmpty() || r.score < 60) continue;
+            if (r.title.isEmpty() || r.artists.isEmpty() || r.score < 85) continue;
+            String qn = nz(q), tn = nz(r.title), an = nz(r.artists.get(0));
+            boolean rel = !qn.isEmpty() && !tn.isEmpty() && (tn.contains(qn) || (tn.length() >= 2 && qn.contains(tn))
+                    || (an + tn).contains(qn) || (tn + an).contains(qn));
+            if (!rel) continue;   // 검색어와 곡명/아티스트가 실제로 맞는 녹음만 사용
             JSONArray rl = o.optJSONArray("releases");
             int bestRank = 9; String bestDate = "9999";
             for (int k = 0; rl != null && k < rl.length(); k++) {
@@ -1023,7 +1027,7 @@ public class MainActivity extends AppCompatActivity {
                     bestRank = rank; bestDate = d; r.rel = re.optString("title"); r.relType = pt;
                 }
             }
-            if (r.rel == null) continue;   // 정식 발매된 릴리스가 없는 녹음은 제외
+            if (r.rel == null || r.nrel < 1) continue;   // 정식 발매된 릴리스가 없는 녹음은 제외
             String key = nz(r.title) + "|" + nz(r.artists.get(0));
             Rec old = best.get(key);
             if (old == null || r.nrel > old.nrel) best.put(key, r);
