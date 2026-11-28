@@ -1452,7 +1452,22 @@ function _renderSearch(d) {
 }
 let _srchSeq = 0;
 function _qTok(q) { return (q || '').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean); }
-function _tokEq(a, b) { return a === b || (Math.min(a.length, b.length) >= 3 && (a.startsWith(b) || b.startsWith(a)) && Math.abs(a.length - b.length) <= 2); }
+function _lev(a, b) {
+    let p = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) {
+        const c = [i];
+        for (let j = 1; j <= b.length; j++) c[j] = Math.min(c[j - 1], p[j]) + 1 > p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1) ? p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1) : Math.min(c[j - 1], p[j]) + 1;
+        p = c;
+    }
+    return p[b.length];
+}
+function _tokEq(a, b) {   // 동일 / 접두어 / 오타 허용(편집거리)
+    if (a === b) return true;
+    const mn = Math.min(a.length, b.length), mx = Math.max(a.length, b.length);
+    if (mn >= 3 && (a.startsWith(b) || b.startsWith(a)) && mx - mn <= 2) return true;
+    const lim = mx >= 8 ? 2 : mx >= 4 ? 1 : 0;
+    return lim > 0 && mx - mn <= lim && _lev(a, b) <= lim;
+}
 function _relScore(t, qt) {
     if (!qt.length) return 0;
     const tt = _qTok(String(t.title || t.name || '').replace(/\([^)]*\)|\[[^\]]*\]/g, ' ')), at = _qTok(t.channel || t.artist || '');
