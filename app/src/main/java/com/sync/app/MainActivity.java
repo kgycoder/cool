@@ -974,10 +974,35 @@ public class MainActivity extends AppCompatActivity {
         return o;
     }
 
+    private static int lev(String a, String b) {
+        int[] p = new int[b.length() + 1], c = new int[b.length() + 1];
+        for (int j = 0; j <= b.length(); j++) p[j] = j;
+        for (int i = 1; i <= a.length(); i++) {
+            c[0] = i;
+            for (int j = 1; j <= b.length(); j++)
+                c[j] = Math.min(Math.min(c[j - 1], p[j]) + 1, p[j - 1] + (a.charAt(i - 1) == b.charAt(j - 1) ? 0 : 1));
+            int[] t = p; p = c; c = t;
+        }
+        return p[b.length()];
+    }
+
+    /** 오타 허용 토큰 비교: 동일 / 접두어 / 편집거리(4자↑ 1, 8자↑ 2) */
+    private static boolean tokEq(String x, String w) {
+        if (x.equals(w)) return true;
+        int mn = Math.min(x.length(), w.length()), mx = Math.max(x.length(), w.length());
+        if (mn >= 3 && (x.startsWith(w) || w.startsWith(x)) && mx - mn <= 2) return true;
+        int lim = mx >= 8 ? 2 : mx >= 4 ? 1 : 0;
+        return lim > 0 && mx - mn <= lim && lev(x, w) <= lim;
+    }
+
     private static boolean tokIn(List<String> toks, String w) {
-        for (String x : toks)
-            if (x.equals(w) || (Math.min(x.length(), w.length()) >= 3 && (x.startsWith(w) || w.startsWith(x)) && Math.abs(x.length() - w.length()) <= 2)) return true;
+        for (String x : toks) if (tokEq(x, w)) return true;
         return false;
+    }
+
+    private static boolean titleEq(String a, String b) {
+        if (a.isEmpty() || b.isEmpty()) return false;
+        return a.equals(b) || (Math.max(a.length(), b.length()) >= 6 && lev(a, b) <= 1);
     }
 
     private static boolean artistHit(String ytArtist, List<String> mbArtists) {
@@ -997,7 +1022,7 @@ public class MainActivity extends AppCompatActivity {
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < qt.size() && i < 6; i++) {
             if (i > 0) sb.append(" AND ");
-            sb.append("(recording:").append(qt.get(i)).append("* OR artist:").append(qt.get(i)).append("*)");
+            sb.append("(recording:").append(qt.get(i)).append("* OR recording:").append(qt.get(i)).append("~ OR artist:").append(qt.get(i)).append("*)");
         }
         String url = "https://musicbrainz.org/ws/2/recording?fmt=json&limit=50&query="
                 + java.net.URLEncoder.encode(sb.toString(), "UTF-8");
@@ -1060,60 +1085,95 @@ public class MainActivity extends AppCompatActivity {
 
     private static boolean durOk(int a, int b) { return a <= 0 || b <= 0 || Math.abs(a - b) <= 4; }
 
-    private static boolean sameTrack(JSONObject t, Rec r, boolean needArtist) {
-        if (!nz(t.optString("title", t.optString("name"))).equals(nz(r.title))) return false;
-        if (!durOk(t.optInt("dur"), r.len)) return false;
+    private static boolean sameTrack(JSONObject t, Rec r, boolean needArtist, boolean needDur) {
+        if (!titleEq(nz(t.optString("title", t.optString("name"))), nz(r.title))) return false;
+        if (needDur && !durOk(t.optInt("dur"), r.len)) return false;
         return !needArtist || artistHit(t.optString("channel"), r.artists);
     }
 
-    /** MB 녹음 → YTM videoId. ① 앨범 페이지 안에서 찾기(앨범 전용 곡) ② 곡 검색 재시도 */
-    private JSONObject resolveRec(Rec r, java.util.Map<String, JSONObject> albumCache) {
+    private JSONArray ytmSongsJson(List<JSONObject> l) { JSONArray a = new JSONArray(); for (JSONObject o : l) a.put(o); return a; }
+
+    private JSONArray cachedList(java.util.Map<String, JSONArray> cache, String key, java.util.concurrent.Callable<List<JSONObject>> f) throws Exception {
+        synchronized (cache) { JSONArray c = cache.get(key); if (c != null) return c; }
+        JSONArray v = ytmSongsJson(f.call());
+        synchronized (cache) { cache.put(key, v); }
+        return v;
+    }
+
+    /** MB/ListenBrainz 녹음 → YTM videoId. ① 발매 앨범 페이지 안에서 곡 찾기(검색에 안 나오는 앨범 전용 곡) ② 곡 검색 재시도 */
+    private JSONObject resolveRec(Rec r, java.util.Map<String, JSONArray> cache) {
         try {
-            String ck = nz(r.rel) + "|" + nz(r.artists.get(0));
-            JSONObject al;
-            synchronized (albumCache) { al = albumCache.get(ck); }
-            if (al == null) {
-                al = new JSONObject().put("songs", new JSONArray());
-                for (JSONObject a : ytmSongs(r.rel + " " + r.artists.get(0), "EgWKAQIYAWoMEA4QChADEAQQCRAF")) {
-                    if (!"album".equals(a.optString("kind"))) continue;
-                    String an = nz(a.optString("name"));
-                    if (!(an.equals(nz(r.rel)) || (an.length() > 3 && nz(r.rel).contains(an)))) continue;
-                    JSONObject bb = new JSONObject().put("browseId", a.optString("id"));
+            String rn = nz(r.rel), a0 = r.artists.get(0);
+            JSONArray albums = cachedList(cache, "s:" + rn + "|" + nz(a0), () -> ytmSongs(r.rel + " " + a0, "EgWKAQIYAWoMEA4QChADEAQQCRAF"));
+            int tries = 0;
+            for (int i = 0; i < albums.length() && tries < 3; i++) {
+                JSONObject a = albums.getJSONObject(i);
+                if (!"album".equals(a.optString("kind"))) continue;
+                String an = nz(a.optString("name"));
+                if (!(an.equals(rn) || (an.length() > 3 && (rn.contains(an) || an.contains(rn))) || lev(an, rn) <= 2)) continue;
+                tries++;
+                final String aid = a.optString("id");
+                JSONArray songs = cachedList(cache, "b:" + aid, () -> {
+                    JSONObject bb = new JSONObject().put("browseId", aid);
                     bb.put("browseEndpointContextSupportedConfigs", new JSONObject().put("browseEndpointContextMusicConfig",
                             new JSONObject().put("pageType", "MUSIC_PAGE_TYPE_ALBUM")));
                     JSONObject doc = new JSONObject(ytmCall("browse", bb));
-                    JSONArray songs = new JSONArray();
+                    List<JSONObject> l = new ArrayList<>();
                     for (Object o : ytmFind(doc, "musicResponsiveListItemRenderer")) {
                         if (!(o instanceof JSONObject)) continue;
                         JSONObject it = ytmList((JSONObject) o);
-                        if (it != null && "song".equals(it.optString("kind"))) songs.put(it);
+                        if (it != null && "song".equals(it.optString("kind"))) l.add(it);
                     }
-                    if (songs.length() == 0) continue;
-                    al.put("songs", songs).put("id", a.optString("id")).put("name", a.optString("name"))
-                      .put("art", a.optString("thumb")).put("year", a.optString("year"))
-                      .put("artistId", a.optString("artistId"));
-                    break;
+                    return l;
+                });
+                for (int k = 0; k < songs.length(); k++) {
+                    JSONObject t = songs.getJSONObject(k);
+                    if (!sameTrack(t, r, false, false)) continue;   // 앨범 안에서는 곡명만 맞으면 충분(길이 차이 허용)
+                    JSONObject c = new JSONObject(t.toString());
+                    if (c.optString("channel").isEmpty()) c.put("channel", android.text.TextUtils.join(", ", r.artists));
+                    c.put("album", a.optString("name")); c.put("albumId", aid);
+                    if (c.optString("art").isEmpty()) c.put("art", a.optString("thumb"));
+                    if (c.optString("year").isEmpty()) c.put("year", a.optString("year"));
+                    if (c.optString("artistId").isEmpty()) c.put("artistId", a.optString("artistId"));
+                    if (c.optInt("dur") <= 0) c.put("dur", r.len);
+                    return c;
                 }
-                synchronized (albumCache) { albumCache.put(ck, al); }
             }
-            JSONArray songs = al.optJSONArray("songs");
-            for (int i = 0; songs != null && i < songs.length(); i++) {
-                JSONObject t = songs.optJSONObject(i);
-                if (t == null || !sameTrack(t, r, false)) continue;
-                JSONObject c = new JSONObject(t.toString());
-                if (c.optString("channel").isEmpty()) c.put("channel", android.text.TextUtils.join(", ", r.artists));
-                c.put("album", al.optString("name")); c.put("albumId", al.optString("id"));
-                if (c.optString("art").isEmpty()) c.put("art", al.optString("art"));
-                if (c.optString("year").isEmpty()) c.put("year", al.optString("year"));
-                if (c.optString("artistId").isEmpty()) c.put("artistId", al.optString("artistId"));
-                if (c.optInt("dur") <= 0) c.put("dur", r.len);
-                return c;
-            }
-            for (JSONObject t : ytmSongs(r.artists.get(0) + " " + r.title, "EgWKAQIIAWoMEA4QChADEAQQCRAF")) {
-                if ("song".equals(t.optString("kind")) && sameTrack(t, r, true)) return t;
+            for (JSONObject t : ytmSongs(a0 + " " + r.title, "EgWKAQIIAWoMEA4QChADEAQQCRAF")) {
+                if ("song".equals(t.optString("kind")) && sameTrack(t, r, true, false)) return t;
             }
         } catch (Exception ignored) {}
         return null;
+    }
+
+    /** ListenBrainz 의 오타 허용(fuzzy) 곡 검색 — 무료·키 불필요. 응답 필드명 변화에 대비해 여러 키를 허용 */
+    private List<Rec> lbRecordings(String q) throws Exception {
+        if (mbHttp == null) mbHttp = http.newBuilder().callTimeout(6, java.util.concurrent.TimeUnit.SECONDS).build();
+        String url = "https://labs.api.listenbrainz.org/recording-search/json?query=" + java.net.URLEncoder.encode(q, "UTF-8");
+        String body;
+        synchronized (MB_CACHE) { body = MB_CACHE.get(url); }
+        if (body == null) {
+            Request req = new Request.Builder().url(url).addHeader("User-Agent", "SYNC/1.0 ( https://github.com/kgycoder/pokerface )").build();
+            try (Response resp = mbHttp.newCall(req).execute()) {
+                if (!resp.isSuccessful() || resp.body() == null) throw new IOException("LB " + resp.code());
+                body = readUtf8(resp);
+            }
+            synchronized (MB_CACHE) { MB_CACHE.put(url, body); }
+        }
+        JSONArray arr = body.trim().startsWith("[") ? new JSONArray(body) : new JSONObject(body).optJSONArray("data");
+        List<Rec> out = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
+        for (int i = 0; arr != null && i < arr.length() && out.size() < 15; i++) {
+            JSONObject o = arr.optJSONObject(i); if (o == null) continue;
+            Rec r = new Rec();
+            r.title = o.optString("recording_name", o.optString("recording", o.optString("title")));
+            String ar = o.optString("artist_credit_name", o.optString("artist_name", o.optString("artist")));
+            r.rel = o.optString("release_name", o.optString("release"));
+            if (r.title.isEmpty() || ar.isEmpty() || r.rel.isEmpty()) continue;
+            r.artists.add(ar); r.relType = "Album"; r.nrel = 3; r.score = 100;
+            if (seen.add(nz(r.title) + "|" + nz(ar))) out.add(r);
+        }
+        return out;
     }
 
     private void doMusicCatalog(JSONObject msg) {
@@ -1121,25 +1181,34 @@ public class MainActivity extends AppCompatActivity {
         try {
             final String q = msg.optString("query");
             java.util.concurrent.Future<List<Rec>> fMb = catPool().submit(() -> mbRecordings(q));
+            java.util.concurrent.Future<List<Rec>> fLb = catPool().submit(() -> lbRecordings(q));
             java.util.concurrent.Future<List<JSONObject>> fYt = catPool().submit(
                     () -> ytmSongs(q, "EgWKAQIIAWoMEA4QChADEAQQCRAF"));
             List<Rec> recs;
             try { recs = fMb.get(6, java.util.concurrent.TimeUnit.SECONDS); }
             catch (Exception e) { recs = new ArrayList<>(); }
+            try {
+                List<Rec> lb = fLb.get(5, java.util.concurrent.TimeUnit.SECONDS);   // 오타 허용 결과를 앞에 배치
+                HashSet<String> k = new HashSet<>();
+                List<Rec> all = new ArrayList<>();
+                for (Rec x : lb) if (k.add(nz(x.title) + "|" + nz(x.artists.get(0)))) all.add(x);
+                for (Rec x : recs) if (k.add(nz(x.title) + "|" + nz(x.artists.get(0)))) all.add(x);
+                recs = all;
+            } catch (Exception ignored) {}
             List<JSONObject> yt;
             try { yt = fYt.get(6, java.util.concurrent.TimeUnit.SECONDS); } catch (Exception e) { yt = new ArrayList<>(); }
 
             JSONObject[] slot = new JSONObject[recs.size()];
             List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
-            java.util.Map<String, JSONObject> albumCache = new java.util.HashMap<>();
+            java.util.Map<String, JSONArray> albumCache = new java.util.HashMap<>();
             int todo = 0;
             for (int i = 0; i < recs.size(); i++) {
                 final Rec r = recs.get(i); final int ix = i;
                 for (JSONObject t : yt) {
                     if (!"song".equals(t.optString("kind"))) continue;
-                    if (sameTrack(t, r, true) || (sameTrack(t, r, false) && t.optInt("dur") > 0 && r.len > 0)) { slot[i] = t; break; }
+                    if (sameTrack(t, r, true, true) || (sameTrack(t, r, false, true) && t.optInt("dur") > 0 && r.len > 0)) { slot[i] = t; break; }
                 }
-                if (slot[i] == null && todo < 6) {
+                if (slot[i] == null && todo < 8) {
                     todo++;
                     fs.add(catPool().submit(() -> { slot[ix] = resolveRec(r, albumCache); }));
                 }
